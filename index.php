@@ -8,7 +8,8 @@ ini_set('display_errors', 1);
 
 // Fungsi bantu untuk membandingkan dua DateTime
 function isOverlap($start1, $end1, $start2, $end2) {
-    return ($start1 < $end2) && ($end1 > $start1);
+    // Overlap terjadi jika waktu mulai dari salah satu interval berada di dalam interval lainnya
+    return ($start1 < $end2 && $end1 > $start2);
 }
 
 // Fungsi Divide and Conquer untuk cek bentrok (menggunakan binary search untuk mempercepat)
