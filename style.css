@@ -72,8 +72,8 @@ th {
 
 /* --- Modern Calendar Styles --- */
 .calendar {
-  width: 60%; /* Kurangi lebar kalender */
-  max-width: 600px; /* Batas maksimal lebar */
+  width: 80%; /* Kalender memenuhi lebar penuh */
+  max-width: none; /* Hilangkan batas maksimal lebar */
   margin: 20px auto; /* Jarak atas dan bawah */
   border-radius: 12px;
   overflow: hidden;
