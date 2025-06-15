@@ -13,74 +13,42 @@ h2 {
 
 /* --- Modern Form Styles --- */
 form {
-  margin: 24px auto;
-  padding: 32px 28px;
+  margin: 20px auto;
+  padding: 20px;
   background: #fff;
-  border-radius: 14px;
-  box-shadow: 0 8px 32px rgba(44, 62, 80, 0.09);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(44, 62, 80, 0.1);
   max-width: 700px;
-  transition: box-shadow 0.2s;
 }
 
 .form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   margin-bottom: 10px;
 }
 
 .form-row input,
+.form-row select,
 .form-row button {
-  font-size: 1em;
-  padding: 12px 14px;
-  border-radius: 8px;
-  border: 1.5px solid #e0e7ff;
-  margin-right: 10px;
-  outline: none;
-  transition: border 0.2s, box-shadow 0.2s;
-  box-shadow: 0 2px 6px rgba(44, 62, 80, 0.03);
-}
-.form-row input:focus {
-  border-color: #2563eb;
-  box-shadow: 0 2px 12px #2563eb22;
+  flex: 1;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  font-size: 0.9em;
 }
 
-.form-row button,
-button[type="submit"] {
-  background: linear-gradient(90deg, #2563eb 70%, #1e40af 100%);
+.form-row button {
+  flex: 0 0 auto;
+  background: #2563eb;
   color: #fff;
   border: none;
   cursor: pointer;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  box-shadow: 0 2px 12px #2563eb25;
-  transition: background 0.2s, box-shadow 0.2s;
-}
-.form-row button:hover,
-button[type="submit"]:hover {
-  background: linear-gradient(90deg, #1746a0 70%, #2563eb 100%);
-  box-shadow: 0 4px 16px #2563eb30;
+  transition: background 0.2s;
 }
 
-button[type="button"] {
-  margin-top: 8px;
-  margin-bottom: 8px;
-}
-
-/* Modern floating action button for add row */
-button[onclick^="addRow"] {
-  display: inline-block;
-  background: #fff;
-  color: #2563eb;
-  border: 2px solid #2563eb;
-  font-weight: bold;
-  font-size: 1.1em;
-  border-radius: 24px;
-  padding: 10px 22px;
-  box-shadow: 0 2px 12px #2563eb11;
-  margin: 0 12px 16px 0;
-  transition: background 0.2s, color 0.2s;
-}
-button[onclick^="addRow"]:hover {
-  background: #2563eb;
-  color: #fff;
+.form-row button:hover {
+  background: #1746a0;
 }
 
 /* --- Table Styles --- */
@@ -104,12 +72,12 @@ th {
 
 /* --- Modern Calendar Styles --- */
 .calendar {
-  width: 100%;
-  max-width: 950px;
-  margin: 40px auto;
-  border-radius: 18px;
+  width: 60%; /* Kurangi lebar kalender */
+  max-width: 600px; /* Batas maksimal lebar */
+  margin: 20px auto; /* Jarak atas dan bawah */
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 10px 32px rgba(44, 62, 80, 0.16);
+  box-shadow: 0 8px 24px rgba(44, 62, 80, 0.12);
   background: linear-gradient(120deg, #e0e7ff 60%, #fafdff 100%);
   border: none;
   font-family: "Segoe UI", Arial, sans-serif;
@@ -329,6 +297,26 @@ th {
   }
 }
 
+@media (max-width: 768px) {
+  .calendar {
+    width: 100%;
+    margin: 10px auto;
+  }
+
+  .schedule-sidebar {
+    position: relative;
+    top: 0;
+    right: 0;
+    width: 100%;
+    margin-bottom: 20px;
+  }
+
+  form {
+    width: 100%;
+    padding: 15px;
+  }
+}
+
 /* --- Modern Delete Button --- */
 .delete-btn,
 form button[type="submit"],
@@ -405,18 +393,126 @@ form button[type="button"]:hover {
 
 /* filepath: c:\xampp\htdocs\scheduling\style.css */
 .form-row select[name="bulk_weight[]"] {
-    padding: 7px 10px;
-    border: 1px solid #bfcfff;
-    border-radius: 6px;
-    font-size: 15px;
-    background: #f7faff;
-    color: #3b3b6d;
-    transition: border 0.2s, box-shadow 0.2s;
-    min-width: 140px;
-    outline: none;
+  padding: 7px 10px;
+  border: 1px solid #bfcfff;
+  border-radius: 6px;
+  font-size: 15px;
+  background: #f7faff;
+  color: #3b3b6d;
+  transition: border 0.2s, box-shadow 0.2s;
+  min-width: 140px;
+  outline: none;
 }
 .form-row select[name="bulk_weight[]"]:focus {
-    border: 1.5px solid #5a6cff;
-    box-shadow: 0 0 0 2px #e0e7ff;
-    background: #eef2ff;
+  border: 1.5px solid #5a6cff;
+  box-shadow: 0 0 0 2px #e0e7ff;
+  background: #eef2ff;
+}
+
+/* Tambahkan di file style.css */
+/* Sidebar untuk daftar jadwal */
+.schedule-sidebar {
+  position: absolute; /* Tetap di sudut kanan atas */
+  top: 20px; /* Jarak dari atas */
+  right: 20px; /* Jarak dari kanan */
+  width: 300px; /* Lebar sidebar */
+  background-color: #fff; /* Warna latar */
+  border: 1px solid #ddd; /* Garis pemisah */
+  padding: 15px; /* Jarak dalam */
+  border-radius: 12px; /* Sudut membulat */
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); /* Bayangan */
+  z-index: 1000; /* Pastikan di atas elemen lain */
+}
+
+.schedule-sidebar h3 {
+  margin-top: 0;
+  font-size: 1.2em;
+  color: #2563eb;
+  text-align: center;
+  border-bottom: 2px solid #ddd;
+  padding-bottom: 10px;
+}
+
+.schedule-item {
+  margin-bottom: 15px;
+  padding: 10px;
+  border-radius: 8px;
+  background-color: #e0e7ff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.schedule-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.schedule-title {
+  font-size: 1.1em;
+  font-weight: bold;
+  color: #1e40af;
+  margin-bottom: 5px;
+}
+
+.schedule-time {
+  font-size: 0.95em;
+  color: #333;
+  margin-bottom: 5px;
+}
+
+.schedule-weight {
+  font-size: 0.85em;
+  color: #555;
+  font-style: italic;
+}
+
+/* --- Container untuk Form dan Daftar Jadwal --- */
+.form-schedule-container {
+  display: flex; /* Gunakan flexbox untuk membuat elemen berdampingan */
+  gap: 20px; /* Jarak antar elemen */
+  justify-content: space-between; /* Elemen tersebar secara horizontal */
+  align-items: flex-start; /* Elemen sejajar di bagian atas */
+  margin: 20px auto; /* Jarak atas dan bawah */
+  max-width: 1200px; /* Batas maksimal lebar */
+}
+
+/* --- Form Tambah Acara --- */
+form {
+  flex: 2; /* Form mengambil lebih banyak ruang */
+  padding: 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(44, 62, 80, 0.1);
+}
+
+/* --- Daftar Jadwal --- */
+.schedule-sidebar {
+  flex: 1; /* Daftar jadwal mengambil lebih sedikit ruang */
+  background-color: #fff;
+  border: 1px solid #ddd;
+  padding: 15px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.schedule-sidebar h3 {
+  margin-top: 0;
+  font-size: 1.2em;
+  color: #2563eb;
+  text-align: center;
+  border-bottom: 2px solid #ddd;
+  padding-bottom: 10px;
+}
+
+/* --- Responsivitas --- */
+@media (max-width: 768px) {
+  .form-schedule-container {
+    flex-direction: column; /* Elemen ditumpuk secara vertikal di layar kecil */
+    gap: 10px;
+  }
+
+  form,
+  .schedule-sidebar {
+    width: 100%; /* Elemen memenuhi lebar layar */
+  }
 }
