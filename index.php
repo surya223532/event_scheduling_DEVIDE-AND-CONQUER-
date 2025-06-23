@@ -348,7 +348,7 @@ foreach ($scheduledEvents as $event) {
     }
 }
 
-// Cek jadwal untuk pengingat harian
+// Cek jadwal untuk pengingat harian (1 hari sebelum)
 $dailyReminderEvents = [];
 $tomorrow = clone $now;
 $tomorrow->modify('+1 day');
@@ -357,6 +357,23 @@ $tomorrowDate = $tomorrow->format('Y-m-d');
 foreach ($scheduledEvents as $event) {
     if ($event['date'] === $tomorrowDate && !$event['hasPassed']) {
         $dailyReminderEvents[] = $event;
+    }
+}
+
+// Cek jadwal yang akan datang dalam 1 hari (untuk notifikasi)
+$oneDayEvents = [];
+$oneDayLater = clone $now;
+$oneDayLater->modify('+1 day');
+
+foreach ($scheduledEvents as $event) {
+    if ($event['hasPassed']) continue;
+    
+    $eventDateTime = new DateTime($event['date'] . ' ' . $event['start_time']);
+    $timeDiff = $eventDateTime->diff($now);
+    
+    // Jika jadwal kurang dari atau sama dengan 1 hari lagi
+    if ($timeDiff->days <= 1 && $eventDateTime > $now) {
+        $oneDayEvents[] = $event;
     }
 }
 
@@ -527,6 +544,50 @@ $dataEvents = json_encode($scheduledEvents, JSON_NUMERIC_CHECK);
         }, timeout);
     }
 
+    // Tampilkan notifikasi untuk jadwal yang akan datang dalam 1 hari
+    function showOneDayNotifications() {
+        const oneDayEvents = <?php echo json_encode($oneDayEvents); ?>;
+        const now = new Date();
+        
+        oneDayEvents.forEach(event => {
+            const eventDate = new Date(event.date + 'T' + event.start_time);
+            const timeDiff = (eventDate - now) / 1000 / 60 / 60; // Selisih dalam jam
+            
+            // Hanya tampilkan jika belum pernah ditampilkan untuk event ini
+            if (!localStorage.getItem(`oneday_notif_${event.id}`)) {
+                let timeLeft = '';
+                if (timeDiff < 1) {
+                    // Kurang dari 1 jam
+                    const minutes = Math.floor(timeDiff * 60);
+                    timeLeft = `${minutes} menit lagi`;
+                } else if (timeDiff < 24) {
+                    // Kurang dari 24 jam
+                    const hours = Math.floor(timeDiff);
+                    const minutes = Math.floor((timeDiff - hours) * 60);
+                    timeLeft = `${hours} jam ${minutes} menit lagi`;
+                } else {
+                    // 1 hari tepat
+                    timeLeft = "1 hari lagi";
+                }
+                
+                showNotification(
+                    'Pengingat Jadwal', 
+                    `${event.title} akan dimulai pada ${event.start_time} (${timeLeft})`,
+                    'reminder'
+                );
+                
+                // Simpan flag di localStorage
+                localStorage.setItem(`oneday_notif_${event.id}`, 'shown');
+                
+                // Hapus flag setelah event lewat
+                const timeUntilEvent = eventDate - now;
+                setTimeout(() => {
+                    localStorage.removeItem(`oneday_notif_${event.id}`);
+                }, timeUntilEvent + 60000); // 1 menit setelah event
+            }
+        });
+    }
+
     // Cek pengingat jadwal
     function checkReminders() {
         const upcomingEvents = <?php echo json_encode($upcomingEvents); ?>;
@@ -573,14 +634,7 @@ $dataEvents = json_encode($scheduledEvents, JSON_NUMERIC_CHECK);
         });
     }
 
-    // Jalankan pengecekan setiap menit
-    checkReminders();
-    setInterval(checkReminders, 60000); // 1 menit
-
-    function closeModal() {
-        document.getElementById('eventModal').style.display = 'none';
-    }
-
+    // Jalankan pengecekan saat halaman dimuat
     document.addEventListener('DOMContentLoaded', function() {
         // Tampilkan notifikasi penghapusan jika ada
         <?php if (!empty($deletedPastEvents)): ?>
@@ -588,6 +642,15 @@ $dataEvents = json_encode($scheduledEvents, JSON_NUMERIC_CHECK);
                 showNotification('Jadwal Dihapus', '<?php echo addslashes($eventTitle); ?> telah dihapus karena sudah lewat', 'error');
             <?php endforeach; ?>
         <?php endif; ?>
+
+        // Tampilkan notifikasi untuk jadwal 1 hari ke depan
+        showOneDayNotifications();
+        
+        // Jalankan pengecekan reminder
+        checkReminders();
+        
+        // Set interval untuk pengecekan reminder (setiap 1 menit)
+        setInterval(checkReminders, 60000);
 
         document.querySelectorAll('.calendar-btn').forEach(function(btn) {
             btn.addEventListener('click', function() {
