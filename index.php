@@ -8,8 +8,7 @@ ini_set('display_errors', 1);
 
 // Fungsi bantu untuk membandingkan dua DateTime
 function isOverlap($start1, $end1, $start2, $end2) {
-    // Overlap terjadi jika waktu mulai dari salah satu interval berada di dalam interval lainnya
-    return ($start1 < $end2 && $end1 > $start2);
+    return ($start1 < $end2) && ($end1 > $start1);
 }
 
 // Fungsi Divide and Conquer untuk cek bentrok (menggunakan binary search untuk mempercepat)
@@ -199,9 +198,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_event_id'])) {
     exit;
 }
 
-// Hapus event yang sudah lewat (opsional)
-$now = (new DateTime())->format('Y-m-d H:i:s');
-$conn->query("DELETE FROM events WHERE STR_TO_DATE(CONCAT(date, ' ', start_time), '%Y-%m-%d %H:%i') + INTERVAL duration MINUTE < '$now'");
+// Hapus event yang sudah lewat dan beri notifikasi
+$now = new DateTime();
+$deletedPastEvents = [];
+$result = $conn->query("SELECT id, title FROM events WHERE STR_TO_DATE(CONCAT(date, ' ', start_time), '%Y-%m-%d %H:%i') + INTERVAL duration MINUTE < '".$now->format('Y-m-d H:i:s')."'");
+while ($row = $result->fetch_assoc()) {
+    $deletedPastEvents[] = $row['title'];
+    $conn->query("DELETE FROM events WHERE id = ".$row['id']);
+}
+
+if (!empty($deletedPastEvents)) {
+    foreach ($deletedPastEvents as $eventTitle) {
+        $_SESSION['messages'][] = "Jadwal '<strong>$eventTitle</strong>' telah dihapus karena sudah lewat.";
+    }
+}
 
 // Ambil bulan & tahun dari URL jika ada
 $currentDate = new DateTime();
@@ -323,6 +333,33 @@ if (count($events) > 0) {
     $scheduledEvents = [];
 }
 
+// Cek jadwal yang akan dimulai dalam 15 menit
+$upcomingEvents = [];
+$now = new DateTime();
+$fifteenMinutesLater = clone $now;
+$fifteenMinutesLater->modify('+15 minutes');
+
+foreach ($scheduledEvents as $event) {
+    if ($event['hasPassed']) continue;
+    
+    $eventDateTime = new DateTime($event['date'] . ' ' . $event['start_time']);
+    if ($eventDateTime > $now && $eventDateTime <= $fifteenMinutesLater) {
+        $upcomingEvents[] = $event;
+    }
+}
+
+// Cek jadwal untuk pengingat harian
+$dailyReminderEvents = [];
+$tomorrow = clone $now;
+$tomorrow->modify('+1 day');
+$tomorrowDate = $tomorrow->format('Y-m-d');
+
+foreach ($scheduledEvents as $event) {
+    if ($event['date'] === $tomorrowDate && !$event['hasPassed']) {
+        $dailyReminderEvents[] = $event;
+    }
+}
+
 $dataEvents = json_encode($scheduledEvents, JSON_NUMERIC_CHECK);
 ?>
 
@@ -332,228 +369,307 @@ $dataEvents = json_encode($scheduledEvents, JSON_NUMERIC_CHECK);
     <meta charset="UTF-8">
     <title>Penjadwalan Multi-Acara (Divide and Conquer)</title>
     <link rel="stylesheet" href="style.css">
-</head>
-<body>
-    <h2>Tambah Beberapa Acara</h2>
-    <div class="form-schedule-container">
-        <!-- Form Tambah Acara -->
-        <form method="post">
-            <div id="multi-form">
-                <div class="form-row">
-                    <input type="text" name="bulk_title[]" placeholder="Judul Acara" required>
-                    <input type="date" name="bulk_date[]" required>
-                    <input type="time" name="bulk_start[]" required>
-                    <input type="number" name="bulk_duration[]" placeholder="Durasi (menit)" required>
-                    <select name="bulk_weight[]" required>
-                        <option value="4">Sangat Penting</option>
-                        <option value="3">Penting</option>
-                        <option value="2">Kurang Penting</option>
-                        <option value="1">Tidak Penting</option>
-                    </select>
-                    <button type="button" onclick="removeRow(this)">Hapus</button>
-                </div>
-            </div>
-            <button type="button" onclick="addRow()">Tambah Baris</button>
-            <button type="submit">Cek & Simpan</button>
-        </form>
-
-        <!-- Daftar Jadwal -->
-        <div class="schedule-sidebar">
-            <h3>Daftar Jadwal</h3>
-            <div id="scheduleList">
-                <?php foreach ($scheduledEvents as $event): ?>
-                    <div class="schedule-item">
-                        <div class="schedule-title">
-                            <b><?php echo htmlspecialchars($event['title']); ?></b>
-                        </div>
-                        <div class="schedule-time">
-                            <?php echo htmlspecialchars($event['date']); ?>, 
-                            <?php echo htmlspecialchars($event['start_time']); ?> - 
-                            <?php 
-                                $start = new DateTime($event['start_time']);
-                                $start->modify("+{$event['duration']} minutes");
-                                echo $start->format('H:i');
-                            ?>
-                        </div>
-                        <div class="schedule-weight">
-                            <span><?php echo labelBobot($event['weight']); ?></span>
-                        </div>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        </div>
-    </div>
-
-    <!-- Kalender -->
-    <?php include 'kalender.php'; ?>
-</body>
-</html>
-
-<!-- Modal untuk detail jadwal -->
-<div id="eventModal" class="modal">
-  <div class="modal-content">
-    <span class="close" onclick="closeModal()">&times;</span>
-    <h3 id="modalTitle"></h3>
-    <div id="modalEvents"></div>
-  </div>
-</div>
-
-<script>
-function closeModal() {
-    document.getElementById('eventModal').style.display = 'none';
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    document.querySelectorAll('.calendar-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            const date = btn.dataset.date;
-            const events = JSON.parse(btn.dataset.events);
-            document.getElementById('modalTitle').textContent = "Jadwal Tanggal " + date;
-            let html = '';
-            if (events.length === 0) {
-                html = "<i>Tidak ada jadwal.</i>";
-            } else {
-                events.forEach(function(ev) {
-                    let [h, m] = ev.start_time.split(':');
-                    let startDate = new Date(0, 0, 0, parseInt(h), parseInt(m));
-                    startDate.setMinutes(startDate.getMinutes() + parseInt(ev.duration));
-                    let endHour = startDate.getHours();
-                    let endMin = startDate.getMinutes();
-                    let nextDay = false;
-                    if (endHour >= 24) {
-                        endHour = endHour % 24;
-                        nextDay = true;
-                    }
-                    let endTime = String(endHour).padStart(2, '0') + ':' + String(endMin).padStart(2, '0');
-                    if (nextDay) endTime += ' (+1 hari)';
-
-                    html += `<div style="margin-bottom:8px;">
-    <b>${ev.title}</b> <span style='font-size:12px;color:#888;'>[${labelBobotJS(ev.weight)}]</span><br>
-    Mulai: ${ev.start_time}<br>
-    Selesai: ${endTime}<br>
-    Durasi: ${ev.duration} menit
-    ${ev.hasPassed ? "<br><em>(Sudah lewat)</em>" : ""}
-    <form method="post" style="display:inline;">
-        <input type="hidden" name="delete_event_id" value="${ev.id}">
-        <button type="submit" onclick="return confirm('Hapus jadwal ini?')">Hapus</button>
-    </form>
-</div>`;
-                });
-            }
-            document.getElementById('modalEvents').innerHTML = html;
-            document.getElementById('eventModal').style.display = 'block';
-        });
-    });
-});
-
-// Notifikasi untuk jadwal yang akan dimulai
-document.addEventListener('DOMContentLoaded', function() {
-    // Ambil data event dari PHP
-    const events = <?php echo $dataEvents; ?>;
-    const notifiedEvents = new Set(); // Untuk menyimpan ID event yang sudah dinotifikasi
-    
-    // Fungsi untuk memeriksa jadwal yang akan datang
-    function checkUpcomingEvents() {
-        const now = new Date();
-        
-        events.forEach(event => {
-            // Skip jika event sudah lewat atau sudah dinotifikasi
-            if (event.hasPassed || notifiedEvents.has(event.id)) return;
-            
-            const eventDate = new Date(event.date + 'T' + event.start_time);
-            const timeDiff = (eventDate - now) / (1000 * 60); // Selisih dalam menit
-            
-            // Jika event akan dimulai dalam 15 menit
-            if (timeDiff > 0 && timeDiff <= 15) {
-                showNotification(event, timeDiff);
-                notifiedEvents.add(event.id); // Tandai sudah dinotifikasi
-            }
-        });
-    }
-    
-    // Fungsi untuk menampilkan notifikasi
-    function showNotification(event, minutesLeft) {
-        const options = {
-            body: `Akan dimulai dalam ${Math.round(minutesLeft)} menit pada ${event.start_time}`,
-            icon: 'icon.png' // Ganti dengan path icon Anda
-        };
-        
-        if (Notification.permission === "granted") {
-            new Notification(`Pengingat: ${event.title}`, options);
-        } else if (Notification.permission !== "denied") {
-            Notification.requestPermission().then(permission => {
-                if (permission === "granted") {
-                    new Notification(`Pengingat: ${event.title}`, options);
-                }
-            });
+    <style>
+        /* Notification Styles */
+        #upcomingNotifications {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            max-width: 300px;
         }
         
-        // Tambahkan notifikasi di halaman juga
-        const notificationElement = document.createElement('div');
-        notificationElement.className = 'notification';
-        notificationElement.innerHTML = `
-            <strong>${event.title}</strong> akan dimulai dalam ${Math.round(minutesLeft)} menit
-            <button onclick="this.parentElement.remove()">×</button>
-        `;
-        document.body.appendChild(notificationElement);
+        .notification {
+            padding: 15px;
+            margin-bottom: 10px;
+            color: white;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: opacity 0.5s ease;
+            opacity: 1;
+        }
         
-        // Hapus notifikasi setelah 5 menit
+        .notification.reminder {
+            background-color: #4CAF50;
+        }
+        
+        .notification.daily {
+            background-color: #2196F3;
+        }
+        
+        .notification.error {
+            background-color: #f44336;
+        }
+        
+        .notification.warning {
+            background-color: #ff9800;
+        }
+        
+        .notification-content {
+            display: flex;
+            align-items: center;
+        }
+        
+        .notification i {
+            margin-right: 10px;
+            font-size: 20px;
+        }
+        
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.4);
+        }
+        
+        .modal-content {
+            background-color: #fefefe;
+            margin: 10% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 600px;
+            border-radius: 5px;
+        }
+        
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .close:hover {
+            color: black;
+        }
+    </style>
+</head>
+<body>
+    <!-- Notifikasi jadwal akan dimulai -->
+    <div id="upcomingNotifications"></div>
+
+    <h2>Tambah Beberapa Acara</h2>
+    <?php
+    if (!empty($_SESSION['messages'])) {
+        foreach ($_SESSION['messages'] as $msg) {
+            $isError = stripos($msg, 'bentrok') !== false || stripos($msg, 'lewat') !== false || stripos($msg, 'Gagal') !== false;
+            $icon = $isError
+                ? '<i style="color:#b91c1c;">&#9888;</i>'
+                : '<i style="color:#2563eb;">&#10003;</i>';
+            $alertClass = $isError ? 'alert alert-error' : 'alert alert-success';
+            echo "<div class='$alertClass'>$icon $msg</div>";
+        }
+        unset($_SESSION['messages']);
+    }
+    ?>
+
+    <form method="post">
+        <div id="multi-form">
+            <div class="form-row">
+                <input type="text" name="bulk_title[]" placeholder="Judul Acara" required>
+                <input type="date" name="bulk_date[]" required>
+                <input type="time" name="bulk_start[]" required>
+                <input type="number" name="bulk_duration[]" placeholder="Durasi (menit)" required>
+                <select name="bulk_weight[]" required>
+                    <option value="4">Sangat Penting</option>
+                    <option value="3">Penting</option>
+                    <option value="2">Kurang Penting</option>
+                    <option value="1">Tidak Penting</option>
+                </select>
+                <button type="button" onclick="removeRow(this)">Hapus</button>
+            </div>
+        </div>
+        <button type="button" onclick="addRow()">Tambah Baris</button>
+        <button type="submit">Cek & Simpan</button>
+    </form>
+
+    <?php include 'kalender.php'; ?>
+
+    <!-- Modal untuk detail jadwal -->
+    <div id="eventModal" class="modal">
+      <div class="modal-content">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <h3 id="modalTitle"></h3>
+        <div id="modalEvents"></div>
+      </div>
+    </div>
+
+    <script>
+    // Fungsi untuk menampilkan notifikasi
+    function showNotification(title, message, type = 'reminder') {
+        const notification = document.createElement('div');
+        notification.className = `notification ${type}`;
+        notification.innerHTML = `
+            <div class="notification-content">
+                <strong>${title}</strong> - ${message}
+            </div>
+        `;
+        
+        const container = document.getElementById('upcomingNotifications');
+        container.appendChild(notification);
+        
+        // Hilangkan notifikasi setelah waktu tertentu
+        let timeout = 5000; // 5 detik default
+        if (type === 'reminder') timeout = 300000; // 5 menit untuk pengingat
+        if (type === 'daily') timeout = 60000; // 1 menit untuk pengingat harian
+        
         setTimeout(() => {
-            notificationElement.remove();
-        }, 5 * 60 * 1000);
+            notification.style.opacity = '0';
+            setTimeout(() => {
+                container.removeChild(notification);
+            }, 500);
+        }, timeout);
     }
-    
-    // Minta izin notifikasi saat halaman dimuat
-    if (window.Notification && Notification.permission !== "granted") {
-        Notification.requestPermission();
+
+    // Cek pengingat jadwal
+    function checkReminders() {
+        const upcomingEvents = <?php echo json_encode($upcomingEvents); ?>;
+        const dailyReminders = <?php echo json_encode($dailyReminderEvents); ?>;
+        const now = new Date();
+        
+        // Pengecekan jadwal 15 menit lagi
+        upcomingEvents.forEach(event => {
+            const eventDate = new Date(event.date + 'T' + event.start_time);
+            const timeDiff = (eventDate - now) / 1000 / 60; // Selisih dalam menit
+            
+            if (timeDiff > 0 && timeDiff <= 15) {
+                if (!localStorage.getItem(`notif_15min_${event.id}`)) {
+                    showNotification(
+                        'Pengingat 15 Menit', 
+                        `${event.title} akan dimulai pada ${event.start_time}`,
+                        'reminder'
+                    );
+                    localStorage.setItem(`notif_15min_${event.id}`, 'shown');
+                    
+                    // Hapus flag setelah event lewat
+                    setTimeout(() => {
+                        localStorage.removeItem(`notif_15min_${event.id}`);
+                    }, (timeDiff * 60 * 1000) + 60000);
+                }
+            }
+        });
+        
+        // Pengecekan pengingat harian
+        dailyReminders.forEach(event => {
+            if (!localStorage.getItem(`daily_reminder_${event.id}`)) {
+                showNotification(
+                    'Pengingat Harian', 
+                    `Besok ada acara ${event.title} pukul ${event.start_time}`,
+                    'daily'
+                );
+                localStorage.setItem(`daily_reminder_${event.id}`, 'shown');
+                
+                // Hapus flag setelah 24 jam
+                setTimeout(() => {
+                    localStorage.removeItem(`daily_reminder_${event.id}`);
+                }, 24 * 60 * 60 * 1000);
+            }
+        });
     }
-    
-    // Periksa jadwal setiap menit
-    checkUpcomingEvents();
-    setInterval(checkUpcomingEvents, 60 * 1000);
-});
 
-window.onclick = function(event) {
-    var modal = document.getElementById('eventModal');
-    if (event.target == modal) {
-        modal.style.display = "none";
+    // Jalankan pengecekan setiap menit
+    checkReminders();
+    setInterval(checkReminders, 60000); // 1 menit
+
+    function closeModal() {
+        document.getElementById('eventModal').style.display = 'none';
     }
-}
 
-function addRow() {
-    const container = document.getElementById('multi-form');
-    const row = document.createElement('div');
-    row.className = 'form-row';
-    row.innerHTML = `
-    <input type="text" name="bulk_title[]" placeholder="Judul Acara" required>
-    <input type="date" name="bulk_date[]" required>
-    <input type="time" name="bulk_start[]" required>
-    <input type="number" name="bulk_duration[]" placeholder="Durasi (menit)" required>
-    <select name="bulk_weight[]" required>
-        <option value="4">Sangat Penting</option>
-        <option value="3">Penting</option>
-        <option value="2">Kurang Penting</option>
-        <option value="1">Tidak Penting</option>
-    </select>
-    <button type="button" onclick="removeRow(this)">Hapus</button>
-    `;
-    container.appendChild(row);
-}
+    document.addEventListener('DOMContentLoaded', function() {
+        // Tampilkan notifikasi penghapusan jika ada
+        <?php if (!empty($deletedPastEvents)): ?>
+            <?php foreach ($deletedPastEvents as $eventTitle): ?>
+                showNotification('Jadwal Dihapus', '<?php echo addslashes($eventTitle); ?> telah dihapus karena sudah lewat', 'error');
+            <?php endforeach; ?>
+        <?php endif; ?>
 
-function removeRow(button) {
-    button.parentNode.remove();
-}
+        document.querySelectorAll('.calendar-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                const date = btn.dataset.date;
+                const events = JSON.parse(btn.dataset.events);
+                document.getElementById('modalTitle').textContent = "Jadwal Tanggal " + date;
+                let html = '';
+                if (events.length === 0) {
+                    html = "<i>Tidak ada jadwal.</i>";
+                } else {
+                    events.forEach(function(ev) {
+                        let [h, m] = ev.start_time.split(':');
+                        let startDate = new Date(0, 0, 0, parseInt(h), parseInt(m));
+                        startDate.setMinutes(startDate.getMinutes() + parseInt(ev.duration));
+                        let endHour = startDate.getHours();
+                        let endMin = startDate.getMinutes();
+                        let nextDay = false;
+                        if (endHour >= 24) {
+                            endHour = endHour % 24;
+                            nextDay = true;
+                        }
+                        let endTime = String(endHour).padStart(2, '0') + ':' + String(endMin).padStart(2, '0');
+                        if (nextDay) endTime += ' (+1 hari)';
 
-function labelBobotJS(weight) {
-    switch (parseInt(weight)) {
-        case 4: return "Sangat Penting";
-        case 3: return "Penting";
-        case 2: return "Kurang Penting";
-        default: return "Tidak Penting";
+                        html += `<div style="margin-bottom:8px;">
+                            <b>${ev.title}</b> <span style='font-size:12px;color:#888;'>[${labelBobotJS(ev.weight)}]</span><br>
+                            Mulai: ${ev.start_time}<br>
+                            Selesai: ${endTime}<br>
+                            Durasi: ${ev.duration} menit
+                            ${ev.hasPassed ? "<br><em>(Sudah lewat)</em>" : ""}
+                            <form method="post" style="display:inline;">
+                                <input type="hidden" name="delete_event_id" value="${ev.id}">
+                                <button type="submit" onclick="return confirm('Hapus jadwal ini?')">Hapus</button>
+                            </form>
+                        </div>`;
+                    });
+                }
+                document.getElementById('modalEvents').innerHTML = html;
+                document.getElementById('eventModal').style.display = 'block';
+            });
+        });
+    });
+
+    window.onclick = function(event) {
+        var modal = document.getElementById('eventModal');
+        if (event.target == modal) {
+            modal.style.display = "none";
+        }
     }
-}
 
-document.addEventListener('DOMContentLoaded', function() {
-    console.log(<?php echo json_encode($scheduledEvents); ?>);
-});
-</script>
+    function addRow() {
+        const container = document.getElementById('multi-form');
+        const row = document.createElement('div');
+        row.className = 'form-row';
+        row.innerHTML = `
+            <input type="text" name="bulk_title[]" placeholder="Judul Acara" required>
+            <input type="date" name="bulk_date[]" required>
+            <input type="time" name="bulk_start[]" required>
+            <input type="number" name="bulk_duration[]" placeholder="Durasi (menit)" required>
+            <select name="bulk_weight[]" required>
+                <option value="4">Sangat Penting</option>
+                <option value="3">Penting</option>
+                <option value="2">Kurang Penting</option>
+                <option value="1">Tidak Penting</option>
+            </select>
+            <button type="button" onclick="removeRow(this)">Hapus</button>
+        `;
+        container.appendChild(row);
+    }
+
+    function removeRow(button) {
+        button.parentNode.remove();
+    }
+
+    function labelBobotJS(weight) {
+        switch (parseInt(weight)) {
+            case 4: return "Sangat Penting";
+            case 3: return "Penting";
+            case 2: return "Kurang Penting";
+            default: return "Tidak Penting";
+        }
+    }
+    </script>
+</body>
+</html>
