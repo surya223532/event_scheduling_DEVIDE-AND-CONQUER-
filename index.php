@@ -6,188 +6,269 @@ include("db.php");
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-// Fungsi bantu untuk membandingkan dua DateTime
+// Fungsi bantu untuk membandingkan dua interval waktu
 function isOverlap($start1, $end1, $start2, $end2) {
-    return ($start1 < $end2) && ($end1 > $start1);
+    return $start1 < $end2 && $end1 > $start2;
 }
 
-// Fungsi Divide and Conquer untuk cek bentrok (menggunakan binary search untuk mempercepat)
-function isConflictDC($events, $start, $end, $left, $right) {
-    if ($left > $right) {
-        return false;
+// Fungsi untuk cek bentrok dengan pendekatan linear (lebih akurat)
+function isConflict($conn, $date, $start_time, $duration, $exclude_id = null) {
+    // Ambil semua event pada tanggal yang sama
+    $sql = "SELECT id, start_time, duration, weight, created_at FROM events WHERE date = ?";
+    if ($exclude_id) {
+        $sql .= " AND id != ?";
     }
-    $mid = intdiv($left + $right, 2);
-    $e_start = new DateTime($events[$mid]['start_time']);
-    $e_end = clone $e_start;
-    $e_end->modify("+{$events[$mid]['duration']} minutes");
-
-    if (isOverlap($start, $end, $e_start, $e_end)) {
-        return true;
-    }
-    if ($start < $e_start) {
-        return isConflictDC($events, $start, $end, $left, $mid - 1);
+    $sql .= " ORDER BY created_at DESC"; // Prioritaskan yang lebih baru
+    $stmt = $conn->prepare($sql);
+    if ($exclude_id) {
+        $stmt->bind_param("si", $date, $exclude_id);
     } else {
-        return isConflictDC($events, $start, $end, $mid + 1, $right);
+        $stmt->bind_param("s", $date);
     }
-}
-
-// Wrapper fungsi cek bentrok dengan Divide and Conquer
-function isConflict($conn, $date, $start_time, $duration) {
-    $stmt = $conn->prepare("SELECT start_time, duration FROM events WHERE date = ? ORDER BY start_time ASC");
-    $stmt->bind_param("s", $date);
     $stmt->execute();
     $result = $stmt->get_result();
     $events = $result->fetch_all(MYSQLI_ASSOC);
 
-    $start = new DateTime($start_time);
-    $end = clone $start;
-    $end->modify("+{$duration} minutes");
+    // Buat DateTime object untuk event yang akan dicek
+    $new_start = new DateTime($start_time);
+    $new_end = clone $new_start;
+    $new_end->modify("+{$duration} minutes");
 
-    return isConflictDC($events, $start, $end, 0, count($events) - 1);
+    $conflicts = [];
+    foreach ($events as $event) {
+        $existing_start = new DateTime($event['start_time']);
+        $existing_end = clone $existing_start;
+        $existing_end->modify("+{$event['duration']} minutes");
+
+        if (isOverlap($new_start, $new_end, $existing_start, $existing_end)) {
+            $conflicts[] = $event;
+        }
+    }
+
+    return $conflicts;
 }
 
-// Fungsi Divide and Conquer untuk cari slot kosong
+// Fungsi untuk cari slot kosong dengan Divide and Conquer
 function getNextAvailableSlot($conn, $date, $duration) {
-    $stmt = $conn->prepare("SELECT start_time, duration FROM events WHERE date = ? ORDER BY start_time ASC");
+    // Ambil semua event pada tanggal yang sama, diurutkan berdasarkan waktu mulai
+    $stmt = $conn->prepare("SELECT start_time, duration FROM events WHERE date = ? ORDER BY start_time ASC, created_at DESC");
     $stmt->bind_param("s", $date);
     $stmt->execute();
     $result = $stmt->get_result();
     $events = $result->fetch_all(MYSQLI_ASSOC);
 
+    // Batas jam operasional (07:00 - 21:00)
     $start_of_day = new DateTime("07:00");
     $end_of_day = new DateTime("21:00");
 
-    $slots = [];
-    $slots[] = [
-        'start' => $start_of_day,
-        'end' => $start_of_day
-    ];
-
-    foreach ($events as $ev) {
-        $s = new DateTime($ev['start_time']);
-        $e = clone $s;
-        $e->modify("+{$ev['duration']} minutes");
-        $slots[] = ['start' => $s, 'end' => $e];
+    // Jika tidak ada event sama sekali
+    if (empty($events)) {
+        $available_end = clone $start_of_day;
+        $available_end->modify("+{$duration} minutes");
+        if ($available_end <= $end_of_day) {
+            return $start_of_day->format('H:i');
+        }
+        return null;
     }
 
-    $slots[] = [
-        'start' => $end_of_day,
-        'end' => $end_of_day
-    ];
+    // Buat array slot yang sudah terisi
+    $busy_slots = [];
+    foreach ($events as $event) {
+        $start = new DateTime($event['start_time']);
+        $end = clone $start;
+        $end->modify("+{$event['duration']} minutes");
+        $busy_slots[] = ['start' => $start, 'end' => $end];
+    }
 
-    function findSlotRecursive($slots, $duration, $left, $right) {
-        if ($left >= $right) {
+    // Fungsi rekursif untuk mencari slot dengan Divide and Conquer
+    function findAvailableSlot($busy_slots, $duration, $start_search, $end_search, $left, $right) {
+        if ($left > $right) {
+            // Cek slot antara end_search dan end_of_day
+            $last_end = $right >= 0 ? $busy_slots[$right]['end'] : $start_search;
+            $potential_start = $last_end;
+            $potential_end = clone $potential_start;
+            $potential_end->modify("+{$duration} minutes");
+            
+            if ($potential_end <= $end_search) {
+                return $potential_start->format('H:i');
+            }
             return null;
         }
 
         $mid = intdiv($left + $right, 2);
+        $current_start = $busy_slots[$mid]['start'];
+        $current_end = $busy_slots[$mid]['end'];
 
-        $gap_start = $slots[$mid]['end'];
-        $gap_end = $slots[$mid + 1]['start']; 
+        // Cek slot sebelum current event
+        $prev_end = $mid > 0 ? $busy_slots[$mid - 1]['end'] : $start_search;
+        $gap_start = $prev_end;
+        $gap_end = $current_start;
 
         $gap_minutes = ($gap_end->getTimestamp() - $gap_start->getTimestamp()) / 60;
-
         if ($gap_minutes >= $duration) {
-            $left_slot = findSlotRecursive($slots, $duration, $left, $mid - 1);
-            if ($left_slot !== null) {
-                return $left_slot;
-            }
             return $gap_start->format('H:i');
-        } else {
-            return findSlotRecursive($slots, $duration, $mid + 1, $right);
         }
+
+        // Cari di sebelah kiri
+        $left_result = findAvailableSlot($busy_slots, $duration, $start_search, $end_search, $left, $mid - 1);
+        if ($left_result !== null) {
+            return $left_result;
+        }
+
+        // Cari di sebelah kanan
+        return findAvailableSlot($busy_slots, $duration, $start_search, $end_search, $mid + 1, $right);
     }
 
-    return findSlotRecursive($slots, $duration, 0, count($slots) - 2);
+    // Mulai pencarian
+    return findAvailableSlot($busy_slots, $duration, $start_of_day, $end_of_day, 0, count($busy_slots) - 1);
 }
 
 // Proses form tambah
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_title'])) {
-    $messages = [];
-    $inputEvents = [];
-    for ($i = 0; $i < count($_POST['bulk_title']); $i++) {
-        $title = trim($_POST['bulk_title'][$i]);
-        $date = $_POST['bulk_date'][$i];
-        $start = $_POST['bulk_start'][$i];
-        $duration = intval($_POST['bulk_duration'][$i]);
-        $weight = intval($_POST['bulk_weight'][$i]);
-        if ($title && $date && $start && $duration > 0) {
-            $start_dt = new DateTime("$date $start");
-            $end_dt = clone $start_dt;
-            $end_dt->modify("+{$duration} minutes");
-            $inputEvents[] = [
-                'title' => $title,
-                'date' => $date,
-                'start' => $start,
-                'duration' => $duration,
-                'weight' => $weight,
-                'start_dt' => $start_dt,
-                'end_dt' => $end_dt,
-                'index' => $i
-            ];
-        }
-    }
-
-    // Kelompokkan berdasarkan tanggal
-    $eventsByDate = [];
-    foreach ($inputEvents as $ev) {
-        $eventsByDate[$ev['date']][] = $ev;
-    }
-
-    $selected = [];
-    foreach ($eventsByDate as $date => $events) {
-        // Urutkan: bobot tertinggi dulu, lalu waktu mulai
-        usort($events, function($a, $b) {
-            if ($b['weight'] !== $a['weight']) {
-                return $b['weight'] - $a['weight'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['confirm_replace'])) {
+        // Proses konfirmasi penggantian jadwal
+        $replace_decision = $_POST['replace_decision'];
+        $new_event = $_SESSION['pending_event'];
+        
+        foreach ($replace_decision as $event_id => $decision) {
+            if ($decision === 'replace') {
+                // Hapus event yang lama
+                $conn->query("DELETE FROM events WHERE id = $event_id");
+                
+                // Simpan event baru
+                $stmt = $conn->prepare("INSERT INTO events (title, date, start_time, duration, weight) VALUES (?, ?, ?, ?, ?)");
+                $stmt->bind_param("sssii", $new_event['title'], $new_event['date'], $new_event['start'], $new_event['duration'], $new_event['weight']);
+                $stmt->execute();
+                
+                $_SESSION['messages'][] = "Jadwal '<strong>{$new_event['title']}</strong>' telah menggantikan jadwal yang lebih rendah prioritasnya.";
+            } else {
+                $_SESSION['messages'][] = "Jadwal '<strong>{$new_event['title']}</strong>' tidak disimpan karena Anda memilih untuk tidak menggantikan jadwal yang ada.";
             }
-            return $a['start_dt'] <=> $b['start_dt'];
-        });
+        }
+        
+        unset($_SESSION['pending_event']);
+        unset($_SESSION['conflicting_events']);
+        header("Location: index.php");
+        exit;
+    } elseif (isset($_POST['bulk_title'])) {
+        $messages = [];
+        $inputEvents = [];
+        for ($i = 0; $i < count($_POST['bulk_title']); $i++) {
+            $title = trim($_POST['bulk_title'][$i]);
+            $date = $_POST['bulk_date'][$i];
+            $start = $_POST['bulk_start'][$i];
+            $duration = intval($_POST['bulk_duration'][$i]);
+            $weight = intval($_POST['bulk_weight'][$i]);
+            if ($title && $date && $start && $duration > 0) {
+                $start_dt = new DateTime("$date $start");
+                $end_dt = clone $start_dt;
+                $end_dt->modify("+{$duration} minutes");
+                $inputEvents[] = [
+                    'title' => $title,
+                    'date' => $date,
+                    'start' => $start,
+                    'duration' => $duration,
+                    'weight' => $weight,
+                    'start_dt' => $start_dt,
+                    'end_dt' => $end_dt,
+                    'index' => $i
+                ];
+            }
+        }
 
-        $chosen = [];
-        foreach ($events as $ev) {
-            $bentrok = false;
-            foreach ($chosen as $sel) {
-                if ($ev['start_dt'] < $sel['end_dt'] && $ev['end_dt'] > $sel['start_dt']) {
-                    $bentrok = true;
-                    break;
+        // Kelompokkan berdasarkan tanggal
+        $eventsByDate = [];
+        foreach ($inputEvents as $ev) {
+            $eventsByDate[$ev['date']][] = $ev;
+        }
+
+        $selected = [];
+        foreach ($eventsByDate as $date => $events) {
+            // Urutkan: bobot tertinggi dulu, lalu waktu mulai, lalu urutan input (yang baru lebih tinggi)
+            usort($events, function($a, $b) {
+                if ($b['weight'] !== $a['weight']) {
+                    return $b['weight'] - $a['weight'];
+                }
+                if ($a['start_dt'] != $b['start_dt']) {
+                    return $a['start_dt'] <=> $b['start_dt'];
+                }
+                return $b['index'] - $a['index']; // Yang lebih baru (index lebih besar) lebih tinggi
+            });
+
+            $chosen = [];
+            foreach ($events as $ev) {
+                $bentrok = false;
+                foreach ($chosen as $sel) {
+                    if (isOverlap($ev['start_dt'], $ev['end_dt'], $sel['start_dt'], $sel['end_dt'])) {
+                        $bentrok = true;
+                        break;
+                    }
+                }
+                if (!$bentrok) {
+                    $chosen[] = $ev;
+                } else {
+                    $messages[] = "Jadwal '<strong>{$ev['title']}</strong>' tidak dijadwalkan karena bentrok dan prioritas lebih rendah.";
                 }
             }
-            if (!$bentrok) {
-                $chosen[] = $ev;
-            } else {
-                $messages[] = "Jadwal '<strong>{$ev['title']}</strong>' tidak dijadwalkan karena bentrok dan prioritas lebih rendah.";
-            }
+            $selected = array_merge($selected, $chosen);
         }
-        $selected = array_merge($selected, $chosen);
-    }
 
-    // Simpan ke database
-    foreach ($selected as $ev) {
-        $today = (new DateTime())->format('Y-m-d');
-        if ($ev['date'] < $today) {
-            $messages[] = "Waktu '<strong>{$ev['title']}</strong>' sudah lewat.";
-            continue;
-        }
-        if ($ev['start'] >= '24:00') {
-            $messages[] = "Jam mulai '<strong>{$ev['title']}</strong>' tidak boleh 24:00.";
-            continue;
-        }
-        if (isConflict($conn, $ev['date'], $ev['start'], $ev['duration'])) {
-            $messages[] = "Jadwal '<strong>{$ev['title']}</strong>' bentrok dengan jadwal di database dan tidak disimpan.";
-        } else {
-            $stmt = $conn->prepare("INSERT INTO events (title, date, start_time, duration, weight) VALUES (?, ?, ?, ?, ?)");
-            $stmt->bind_param("sssii", $ev['title'], $ev['date'], $ev['start'], $ev['duration'], $ev['weight']);
-            if ($stmt->execute()) {
-                $messages[] = "Jadwal '<strong>{$ev['title']}</strong>' berhasil disimpan.";
+        // Simpan ke database
+        foreach ($selected as $ev) {
+            $today = (new DateTime())->format('Y-m-d');
+            if ($ev['date'] < $today) {
+                $messages[] = "Waktu '<strong>{$ev['title']}</strong>' sudah lewat.";
+                continue;
+            }
+            if ($ev['start'] >= '24:00') {
+                $messages[] = "Jam mulai '<strong>{$ev['title']}</strong>' tidak boleh 24:00.";
+                continue;
+            }
+            
+            // Cek konflik dengan database
+            $conflicts = isConflict($conn, $ev['date'], $ev['start'], $ev['duration']);
+            
+            if (!empty($conflicts)) {
+                $hasHigherPriority = false;
+                $conflictingEvents = [];
+                
+                foreach ($conflicts as $conflict) {
+                    if ($ev['weight'] > $conflict['weight']) {
+                        $hasHigherPriority = true;
+                        $conflictingEvents[] = $conflict;
+                    } elseif ($ev['weight'] == $conflict['weight']) {
+                        // Jika prioritas sama, otomatis ganti dengan yang baru
+                        $hasHigherPriority = true;
+                        $conflictingEvents[] = $conflict;
+                    }
+                }
+                
+                if ($hasHigherPriority) {
+                    // Simpan event yang akan ditambahkan di session
+                    $_SESSION['pending_event'] = $ev;
+                    $_SESSION['conflicting_events'] = $conflictingEvents;
+                    $_SESSION['messages'] = $messages;
+                    
+                    // Redirect ke halaman konfirmasi
+                    header("Location: confirm_replace.php");
+                    exit;
+                } else {
+                    $messages[] = "Jadwal '<strong>{$ev['title']}</strong>' bentrok dengan jadwal di database dan tidak disimpan karena prioritas lebih rendah.";
+                }
             } else {
-                $messages[] = "Gagal menyimpan jadwal '{$ev['title']}'.";
+                $stmt = $conn->prepare("INSERT INTO events (title, date, start_time, duration, weight) VALUES (?, ?, ?, ?, ?)");
+                $stmt->bind_param("sssii", $ev['title'], $ev['date'], $ev['start'], $ev['duration'], $ev['weight']);
+                if ($stmt->execute()) {
+                    $messages[] = "Jadwal '<strong>{$ev['title']}</strong>' berhasil disimpan.";
+                } else {
+                    $messages[] = "Gagal menyimpan jadwal '{$ev['title']}'.";
+                }
             }
         }
+        $_SESSION['messages'] = $messages;
+        header("Location: index.php");
+        exit;
     }
-    $_SESSION['messages'] = $messages;
-    header("Location: index.php");
-    exit;
 }
 
 // Hapus event
@@ -237,7 +318,7 @@ if ($nextMonth > 12) {
 
 // Ambil event sesuai bulan & tahun
 $events = [];
-$result = $conn->query("SELECT * FROM events WHERE MONTH(date) = $currentMonth AND YEAR(date) = $currentYear ORDER BY date ASC, start_time ASC");
+$result = $conn->query("SELECT * FROM events WHERE MONTH(date) = $currentMonth AND YEAR(date) = $currentYear ORDER BY date ASC, start_time ASC, created_at DESC");
 $now = new DateTime();
 
 while ($row = $result->fetch_assoc()) {
@@ -253,14 +334,22 @@ while ($row = $result->fetch_assoc()) {
 
 // Algoritma penjadwalan interval berbobot
 function weightedIntervalScheduling($events) {
-    foreach ($events as &$ev) {
-        $ev['weight'] = (int)$ev['weight']; 
+    foreach ($events as $i => &$ev) {
+        $ev['weight'] = (int)$ev['weight'];
+        $ev['input_order'] = $i; // Simpan urutan input sebagai penentu
     }
     unset($ev);
 
+    // Urutkan berdasarkan: 
+    // 1. Waktu selesai 
+    // 2. Jika sama, urutkan berdasarkan input_order (yang lebih baru/akhir lebih tinggi)
     usort($events, function($a, $b) {
         $a_end = (new DateTime($a['start_time']))->modify("+{$a['duration']} minutes");
         $b_end = (new DateTime($b['start_time']))->modify("+{$b['duration']} minutes");
+        
+        if ($a_end == $b_end) {
+            return $b['input_order'] - $a['input_order']; // Yang lebih baru diprioritaskan
+        }
         return $a_end <=> $b_end;
     });
 
@@ -464,6 +553,25 @@ $dataEvents = json_encode($scheduledEvents, JSON_NUMERIC_CHECK);
         
         .close:hover {
             color: black;
+        }
+        
+        /* Replace Confirmation Styles */
+        .conflict-event {
+            background-color: #fff3cd;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-left: 4px solid #ffc107;
+        }
+        
+        .new-event {
+            background-color: #d4edda;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-left: 4px solid #28a745;
+        }
+        
+        .radio-option {
+            margin: 10px 0;
         }
     </style>
 </head>
@@ -732,6 +840,10 @@ $dataEvents = json_encode($scheduledEvents, JSON_NUMERIC_CHECK);
             case 2: return "Kurang Penting";
             default: return "Tidak Penting";
         }
+    }
+
+    function closeModal() {
+        document.getElementById('eventModal').style.display = "none";
     }
     </script>
 </body>
